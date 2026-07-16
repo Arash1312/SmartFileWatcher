@@ -80,11 +80,10 @@ class SmartOrganizer(FileSystemEventHandler):
 
 ## Future Improvements
 
-* AI document classification
-* Cloud synchronization
-* Web dashboard
-* Telegram notifications
-* File analytics and reports
+* Duplicate file detection
+* File activity logging
+* AI-ready architecture for content classification
+* Cross-platform support (Windows, Linux, macOS)
 
 if __name__ == "__main__":
     path = "./Downloads"

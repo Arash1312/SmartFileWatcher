@@ -4,13 +4,13 @@ A modern Python application that automatically monitors and organizes files in r
 
 ## Features
 
-* Real-time folder monitoring
-* Automatic file categorization
-* Custom user-defined rules
 * Duplicate file detection
 * File activity logging
 * AI-ready architecture for content classification
 * Cross-platform support (Windows, Linux, macOS)
+* Real-time folder monitoring
+* Automatic file categorization
+* Custom user-defined rules
 
 ## Example
 

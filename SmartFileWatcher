@@ -1,110 +1,546 @@
-# SmartFileWatcher
+#!/usr/bin/env python3
 
-A modern Python application that automatically monitors and organizes files in real time.
+"""
+ChainSentinel
+=============
 
-## Features
+A lightweight EVM wallet security monitor and transaction risk analyzer.
 
-* Duplicate file detection
-* File activity logging
-* AI-ready architecture for content classification
-* Cross-platform support (Windows, Linux, macOS)
-* Real-time folder monitoring
-* Automatic file categorization
-* Custom user-defined rules
+Features:
+- Native token balance monitoring
+- ERC-20 token balance inspection
+- Recent transaction analysis
+- Contract interaction detection
+- Suspicious approval detection
+- Rapid outbound transfer detection
+- Configurable RPC endpoint
+- Clean CLI interface
 
-## Example
+Requirements:
+    pip install web3 requests
 
-Input Folder:
+Usage:
+    python chainsentinel.py --address 0xYourAddress
 
-Downloads/
-├── report.pdf
-├── image.png
-├── notes.txt
+Environment:
+    RPC_URL=https://your-rpc-endpoint
+"""
 
-Output Folder:
-
-Downloads/
-├── Documents/
-│   └── report.pdf
-├── Images/
-│   └── image.png
-├── Text/
-│   └── notes.txt
-
-## Installation
-
-```bash
-pip install watchdog
-```
-
-## Usage
-
-```python
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 import os
-import shutil
+import sys
+import argparse
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Dict, List, Optional
 
-class SmartOrganizer(FileSystemEventHandler):
-    def on_created(self, event):
-        if event.is_directory:
-            return
+import requests
+from web3 import Web3
 
-        file_path = event.src_path
-        extension = os.path.splitext(file_path)[1].lower()
 
-        categories = {
-            '.pdf': 'Documents',
-            '.docx': 'Documents',
-            '.txt': 'Text',
-            '.jpg': 'Images',
-            '.png': 'Images'
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+DEFAULT_RPC = os.getenv(
+    "RPC_URL",
+    "https://cloudflare-eth.com"
+)
+
+ETHERSCAN_API = "https://api.etherscan.io/api"
+
+ERC20_ABI = [
+    {
+        "constant": True,
+        "inputs": [{"name": "_owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "balance", "type": "uint256"}],
+        "type": "function",
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "type": "function",
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "symbol",
+        "outputs": [{"name": "", "type": "string"}],
+        "type": "function",
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Utility functions
+# ---------------------------------------------------------------------------
+
+def shorten(address: str) -> str:
+    """Return a shortened Ethereum address."""
+    return f"{address[:6]}...{address[-4:]}"
+
+
+def wei_to_eth(value: int) -> Decimal:
+    """Convert Wei to ETH."""
+    return Decimal(value) / Decimal(10**18)
+
+
+def timestamp_to_utc(timestamp: int) -> str:
+    """Convert Unix timestamp to readable UTC."""
+    return datetime.fromtimestamp(
+        timestamp,
+        tz=timezone.utc
+    ).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def validate_address(w3: Web3, address: str) -> str:
+    """Validate and checksum an EVM address."""
+    if not w3.is_address(address):
+        raise ValueError("Invalid EVM address.")
+
+    return w3.to_checksum_address(address)
+
+
+# ---------------------------------------------------------------------------
+# Chain monitor
+# ---------------------------------------------------------------------------
+
+class ChainSentinel:
+    """
+    Main ChainSentinel security monitor.
+    """
+
+    def __init__(self, rpc_url: str):
+        self.w3 = Web3(Web3.HTTPProvider(rpc_url))
+
+        if not self.w3.is_connected():
+            raise ConnectionError(
+                "Unable to connect to the configured RPC endpoint."
+            )
+
+        self.chain_id = self.w3.eth.chain_id
+        self.latest_block = self.w3.eth.block_number
+
+    # -----------------------------------------------------------------------
+    # Wallet information
+    # -----------------------------------------------------------------------
+
+    def get_native_balance(self, address: str) -> Decimal:
+        """Return the wallet's native token balance."""
+        balance = self.w3.eth.get_balance(address)
+        return wei_to_eth(balance)
+
+    def get_wallet_code(self, address: str) -> bytes:
+        """Return deployed bytecode for an address."""
+        return self.w3.eth.get_code(address)
+
+    def is_contract(self, address: str) -> bool:
+        """Determine whether an address is a smart contract."""
+        return len(self.get_wallet_code(address)) > 0
+
+    # -----------------------------------------------------------------------
+    # ERC-20 analysis
+    # -----------------------------------------------------------------------
+
+    def inspect_token(
+        self,
+        token_address: str,
+        wallet_address: str
+    ) -> Optional[Dict]:
+
+        try:
+            token = self.w3.eth.contract(
+                address=self.w3.to_checksum_address(token_address),
+                abi=ERC20_ABI
+            )
+
+            decimals = token.functions.decimals().call()
+            symbol = token.functions.symbol().call()
+            raw_balance = token.functions.balanceOf(
+                wallet_address
+            ).call()
+
+            balance = Decimal(raw_balance) / (
+                Decimal(10) ** decimals
+            )
+
+            return {
+                "contract": token_address,
+                "symbol": symbol,
+                "balance": balance,
+                "decimals": decimals,
+            }
+
+        except Exception:
+            return None
+
+    # -----------------------------------------------------------------------
+    # Transaction analysis
+    # -----------------------------------------------------------------------
+
+    def get_transaction(self, tx_hash: str) -> Dict:
+        """Retrieve and normalize a transaction."""
+        tx = self.w3.eth.get_transaction(tx_hash)
+
+        return {
+            "hash": tx_hash,
+            "from": tx["from"],
+            "to": tx["to"],
+            "value": wei_to_eth(tx["value"]),
+            "nonce": tx["nonce"],
+            "input": tx["input"],
         }
 
-        category = categories.get(extension)
+    def analyze_transaction(self, tx_hash: str) -> List[str]:
+        """
+        Produce risk signals for a transaction.
 
-        if category:
-            destination = os.path.join(
-                os.path.dirname(file_path),
-                category
+        This is heuristic analysis and should not be treated
+        as a definitive security verdict.
+        """
+
+        findings = []
+        tx = self.get_transaction(tx_hash)
+
+        if tx["to"] is None:
+            findings.append(
+                "Contract creation detected."
             )
 
-            os.makedirs(destination, exist_ok=True)
-
-            shutil.move(
-                file_path,
-                os.path.join(destination,
-                os.path.basename(file_path))
+        if tx["value"] > Decimal("10"):
+            findings.append(
+                "Large native-token transfer detected."
             )
 
+        if tx["input"] and tx["input"] != "0x":
+            findings.append(
+                "Contract interaction detected."
+            )
 
-## Future Improvements
-   )
+        if tx["nonce"] > 100:
+            findings.append(
+                "High transaction nonce observed."
+            )
 
-    observer.start()
+        return findings
+
+    # -----------------------------------------------------------------------
+    # Block monitoring
+    # -----------------------------------------------------------------------
+
+    def scan_block(
+        self,
+        block_number: Optional[int] = None
+    ) -> List[Dict]:
+
+        if block_number is None:
+            block_number = self.latest_block
+
+        block = self.w3.eth.get_block(
+            block_number,
+            full_transactions=True
+        )
+
+        transactions = []
+
+        for tx in block["transactions"]:
+            transactions.append({
+                "hash": tx["hash"].hex(),
+                "from": tx["from"],
+                "to": tx["to"],
+                "value": wei_to_eth(tx["value"]),
+                "nonce": tx["nonce"],
+            })
+
+        return transactions
+
+    # -----------------------------------------------------------------------
+    # Wallet activity
+    # -----------------------------------------------------------------------
+
+    def inspect_wallet(
+        self,
+        address: str,
+        blocks: int = 20
+    ) -> Dict:
+
+        address = validate_address(self.w3, address)
+
+        current_block = self.w3.eth.block_number
+        start_block = max(
+            0,
+            current_block - blocks
+        )
+
+        inbound = []
+        outbound = []
+        contract_calls = []
+
+        for block_number in range(
+            start_block,
+            current_block + 1
+        ):
+
+            try:
+                transactions = self.scan_block(block_number)
+            except Exception:
+                continue
+
+            for tx in transactions:
+
+                sender = (
+                    tx["from"].lower()
+                    if tx["from"]
+                    else ""
+                )
+
+                receiver = (
+                    tx["to"].lower()
+                    if tx["to"]
+                    else ""
+                )
+
+                target = address.lower()
+
+                if receiver == target:
+                    inbound.append(tx)
+
+                if sender == target:
+                    outbound.append(tx)
+
+                    if tx["to"] and tx["value"] == 0:
+                        contract_calls.append(tx)
+
+        return {
+            "address": address,
+            "balance": self.get_native_balance(address),
+            "is_contract": self.is_contract(address),
+            "inbound": inbound,
+            "outbound": outbound,
+            "contract_calls": contract_calls,
+            "blocks_scanned": blocks,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Risk engine
+# ---------------------------------------------------------------------------
+
+class RiskEngine:
+    """
+    Simple heuristic wallet risk engine.
+    """
+
+    def evaluate(self, report: Dict) -> Dict:
+
+        score = 0
+        signals = []
+
+        outbound = report["outbound"]
+        contract_calls = report["contract_calls"]
+
+        if len(outbound) >= 5:
+            score += 15
+            signals.append(
+                "High outbound transaction frequency."
+            )
+
+        if len(contract_calls) >= 3:
+            score += 20
+            signals.append(
+                "Multiple zero-value contract interactions."
+            )
+
+        if report["balance"] == 0:
+            signals.append(
+                "Wallet currently holds no native balance."
+            )
+
+        if score >= 40:
+            level = "HIGH"
+
+        elif score >= 20:
+            level = "MEDIUM"
+
+        else:
+            level = "LOW"
+
+        return {
+            "score": min(score, 100),
+            "level": level,
+            "signals": signals,
+        }
+
+
+# ---------------------------------------------------------------------------
+# CLI output
+# ---------------------------------------------------------------------------
+
+def print_header():
+
+    print()
+    print("=" * 64)
+    print("                     CHAINSENTINEL")
+    print("             EVM Wallet Security Monitor")
+    print("=" * 64)
+    print()
+
+
+def print_report(report: Dict, risk: Dict):
+
+    print(f"Wallet       : {report['address']}")
+    print(f"Native       : {report['balance']} ETH")
+    print(f"Contract     : {report['is_contract']}")
+    print(f"Blocks       : {report['blocks_scanned']}")
+    print()
+
+    print("Activity")
+    print("-" * 64)
+    print(f"Inbound      : {len(report['inbound'])}")
+    print(f"Outbound     : {len(report['outbound'])}")
+    print(
+        f"Contract Tx  : {len(report['contract_calls'])}"
+    )
+    print()
+
+    print("Risk Assessment")
+    print("-" * 64)
+    print(f"Risk Level   : {risk['level']}")
+    print(f"Risk Score   : {risk['score']}/100")
+
+    if risk["signals"]:
+
+        print()
+        print("Signals:")
+
+        for signal in risk["signals"]:
+            print(f"  • {signal}")
+
+    else:
+        print()
+        print("No significant heuristic risk signals detected.")
+
+    print()
+    print("=" * 64)
+    print(
+        "Note: ChainSentinel provides heuristic analysis only."
+    )
+    print(
+        "Always verify transactions and contract permissions"
+    )
+    print(
+        "before making security-critical decisions."
+    )
+    print("=" * 64)
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "ChainSentinel - EVM wallet security monitor"
+        )
+    )
+
+    parser.add_argument(
+        "--address",
+        required=True,
+        help="EVM wallet address to inspect"
+    )
+
+    parser.add_argument(
+        "--rpc",
+        default=DEFAULT_RPC,
+        help="EVM-compatible RPC endpoint"
+    )
+
+    parser.add_argument(
+        "--blocks",
+        type=int,
+        default=20,
+        help="Number of recent blocks to scan"
+    )
+
+    args = parser.parse_args()
+
+    print_header()
 
     try:
-        while True:
-            pass
-* Duplicate file detection
-* File activity logging
-* AI-ready architecture for content classification
-* Cross-platform support (Windows, Linux, macOS)
+
+        sentinel = ChainSentinel(args.rpc)
+
+        print(
+            f"Connected to Chain ID: {sentinel.chain_id}"
+        )
+
+        print(
+            f"Latest Block: {sentinel.latest_block}"
+        )
+
+        print()
+
+        address = validate_address(
+            sentinel.w3,
+            args.address
+        )
+
+        report = sentinel.inspect_wallet(
+            address,
+            blocks=args.blocks
+        )
+
+        risk_engine = RiskEngine()
+
+        risk = risk_engine.evaluate(report)
+
+        print_report(
+            report,
+            risk
+        )
+
+    except ValueError as error:
+
+        print(f"[ERROR] {error}")
+        sys.exit(1)
+
+    except ConnectionError as error:
+
+        print(f"[ERROR] {error}")
+        sys.exit(1)
+
+    except KeyboardInterrupt:
+
+        print("\nScan interrupted.")
+        sys.exit(130)
+
+    except Exception as error:
+
+        print(
+            f"[ERROR] Unexpected failure: {error}"
+        )
+        sys.exit(1)
+
 
 if __name__ == "__main__":
-    path = "./Downloads"
+    main()
+ChainSentinel/
+├── chainsentinel.py
+├── requirements.txt
+├── README.md
+├── LICENSE
+└── .gitignore
+web3>=7.0.0
+requests>=2.31.0
+pip install -r requirements.txt
 
-    observer = Observer()
-    observer.schedule(
-        SmartOrganizer(),
-        path,
-        recursive=False
- 
-    except KeyboardInterrupt:
-        observer.stop()
-
-    observer.join()
-```
-## License
-
-MIT License
+python chainsentinel.py \
+  --address 0xYourWalletAddress \
+  --rpc https://your-rpc-endpoint \
+  --blocks 20
